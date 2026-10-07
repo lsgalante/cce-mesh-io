@@ -3,8 +3,9 @@
 //!
 //! Each reader returns a [`Scene`] as the file has it: named parts, in the
 //! file's own coordinates and units, with the up axis its format conventionally
-//! uses. Nothing is rotated, scaled or welded by a reader; [`load`] welds, and
-//! what to do about the up axis is the caller's choice ([`Mesh::z_up_to_y_up`]).
+//! uses, and the length [`Unit`] its format conventionally means. Nothing is
+//! rotated, scaled or welded by a reader; [`load`] welds, and what to do about
+//! the up axis is the caller's choice ([`Mesh::z_up_to_y_up`]).
 //! A viewer turns a Z-up STL upright; an editor importing its own Y-up export
 //! must not.
 //!
@@ -33,6 +34,30 @@ pub enum UpAxis {
     Z,
 }
 
+/// What one unit of a file's coordinates is, by its format's convention.
+/// None of these formats can be trusted to say: it is what a file of that
+/// kind usually means, and a caller showing a size should say which it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unit {
+    /// STL: what every slicer assumes.
+    Millimetre,
+    /// glTF: metres, by its spec.
+    Metre,
+    /// OBJ and PLY say nothing.
+    Unspecified,
+}
+
+impl Unit {
+    /// Millimetres per file unit, or `None` when the format does not say.
+    pub fn millimetres(self) -> Option<f32> {
+        match self {
+            Unit::Millimetre => Some(1.0),
+            Unit::Metre => Some(1000.0),
+            Unit::Unspecified => None,
+        }
+    }
+}
+
 /// One named piece of a scene: a glTF node's mesh, a whole STL.
 #[derive(Debug, Clone, Default)]
 pub struct Part {
@@ -41,11 +66,12 @@ pub struct Part {
 }
 
 /// What a file holds: its parts, already placed where the file's node tree
-/// puts them, and its up axis.
+/// puts them, its up axis and its unit.
 #[derive(Debug, Clone)]
 pub struct Scene {
     pub parts: Vec<Part>,
     pub up: UpAxis,
+    pub unit: Unit,
 }
 
 impl Scene {

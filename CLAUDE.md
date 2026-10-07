@@ -18,6 +18,8 @@ particular to this crate.
   (`Mesh::z_up_to_y_up`); an importer of the designer's own exports must
   not, because cce-designer writes its Y-up world into STL as is (its STL
   export is not Z-up — a slicer will lay those models on their side).
+- `unit` is what the format conventionally means (STL mm, glTF metres, OBJ
+  and PLY unspecified); a caller showing a size says which.
 - Colours are linear RGB. A palette colour per triangle (`tri_color` →
   `colors`: MTL `Kd`, glTF base-colour factor) and, when the file colours
   its points, `corner_colors` (three per triangle) which win. They ride on

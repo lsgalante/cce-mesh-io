@@ -14,7 +14,7 @@ use std::path::Path;
 use glam::Vec3;
 
 use crate::mesh::{Mesh, CLAY};
-use crate::{Part, Scene, UpAxis};
+use crate::{Part, Scene, Unit, UpAxis};
 
 pub fn read(bytes: &[u8], dir: Option<&Path>) -> Result<Scene, String> {
     let text = String::from_utf8_lossy(bytes);
@@ -78,7 +78,7 @@ pub fn read(bytes: &[u8], dir: Option<&Path>) -> Result<Scene, String> {
             _ => {}
         }
     }
-    Ok(Scene { parts: vec![Part { name, mesh }], up: UpAxis::Y })
+    Ok(Scene { parts: vec![Part { name, mesh }], up: UpAxis::Y, unit: Unit::Unspecified })
 }
 
 /// Each `newmtl` in an MTL file and its `Kd`.

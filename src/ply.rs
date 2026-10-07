@@ -16,7 +16,7 @@
 use glam::Vec3;
 
 use crate::mesh::{srgb_to_linear, Mesh, CLAY};
-use crate::{Part, Scene, UpAxis};
+use crate::{Part, Scene, Unit, UpAxis};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Scalar {
@@ -213,7 +213,7 @@ pub fn read(bytes: &[u8]) -> Result<Scene, String> {
     let corner_colors = (!point_colors.is_empty())
         .then(|| faces.iter().flat_map(|f| f.map(|i| point_colors[i as usize])).collect());
     let mesh = Mesh { tri_color: vec![0; faces.len()], positions, triangles: faces, colors: vec![CLAY], corner_colors };
-    Ok(Scene { parts: vec![Part { name: String::new(), mesh }], up: UpAxis::Y })
+    Ok(Scene { parts: vec![Part { name: String::new(), mesh }], up: UpAxis::Y, unit: Unit::Unspecified })
 }
 
 fn skip_list(body: &mut Body, count: Scalar, item: Scalar) -> Result<(), String> {

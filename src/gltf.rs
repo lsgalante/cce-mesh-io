@@ -23,7 +23,7 @@ use gltf::buffer::Source;
 use gltf::mesh::Mode;
 
 use crate::mesh::Mesh;
-use crate::{Part, Scene, UpAxis};
+use crate::{Part, Scene, Unit, UpAxis};
 
 /// Deeper than any real node tree; a guard against a cycle the parser let by.
 const MAX_DEPTH: usize = 128;
@@ -115,7 +115,7 @@ pub fn read(bytes: &[u8], dir: Option<&Path>) -> Result<Scene, String> {
     if textured {
         log::info!("[mesh-io] glTF: base-colour textures are not drawn yet; textured materials show their factor");
     }
-    Ok(Scene { parts, up: UpAxis::Y })
+    Ok(Scene { parts, up: UpAxis::Y, unit: Unit::Metre })
 }
 
 /// A primitive's index list as triangles, or `None` for points and lines.
@@ -212,6 +212,8 @@ mod tests {
     fn a_node_transform_places_the_mesh_and_the_material_colours_it() {
         let s = read(&inline(r#"[{"name":"moved","mesh":0,"translation":[10,0,0],"scale":[2,2,2]}]"#, 5), None).unwrap();
         assert_eq!(s.up, UpAxis::Y);
+        assert_eq!(s.unit, Unit::Metre);
+        assert_eq!(Unit::Metre.millimetres(), Some(1000.0));
         let part = &s.parts[0];
         assert_eq!(part.name, "moved");
         assert_eq!(part.mesh.positions[1], Vec3::new(12.0, 0.0, 0.0));

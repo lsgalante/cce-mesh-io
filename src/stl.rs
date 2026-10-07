@@ -13,7 +13,7 @@
 use glam::Vec3;
 
 use crate::mesh::{Mesh, CLAY};
-use crate::{Part, Scene, UpAxis};
+use crate::{Part, Scene, Unit, UpAxis};
 
 pub fn read(bytes: &[u8]) -> Result<Scene, String> {
     let corners = if is_binary(bytes) { binary(bytes)? } else { ascii(bytes)? };
@@ -25,7 +25,7 @@ pub fn read(bytes: &[u8]) -> Result<Scene, String> {
         colors: vec![CLAY],
         corner_colors: None,
     };
-    Ok(Scene { parts: vec![Part { name: String::new(), mesh }], up: UpAxis::Z })
+    Ok(Scene { parts: vec![Part { name: String::new(), mesh }], up: UpAxis::Z, unit: Unit::Millimetre })
 }
 
 fn is_binary(bytes: &[u8]) -> bool {
@@ -116,6 +116,7 @@ mod tests {
     fn points_are_as_written_and_the_scene_says_z_is_up() {
         let s = read(&binary_of(&[[[0., 0., 2.], [1., 0., 0.], [0., 3., 0.]]])).unwrap();
         assert_eq!(s.up, UpAxis::Z);
+        assert_eq!(s.unit, Unit::Millimetre);
         assert_eq!(s.parts[0].mesh.positions[0], Vec3::new(0.0, 0.0, 2.0));
     }
 
