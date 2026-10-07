@@ -1,0 +1,17 @@
+[package]
+name = "cce-mesh-io"
+version = "0.1.0"
+edition = "2021"
+description = "Mesh files in and out for cce apps: STL, OBJ, glTF and PLY read into one scene type"
+
+[lib]
+name = "cce_mesh_io"
+path = "src/lib.rs"
+
+[dependencies]
+glam = "0.29"
+log = "0.4"
+# Without its default `import` feature: that pulls in the image decoders for
+# textures nothing here draws yet. Buffers are loaded by hand (`gltf.rs`).
+gltf = { version = "1.4", default-features = false, features = ["utils", "names"] }
+base64 = "0.22"
