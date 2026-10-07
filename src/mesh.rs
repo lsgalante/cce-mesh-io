@@ -1,5 +1,6 @@
-//! The geometry every reader produces: a triangle mesh with a colour per
-//! triangle and, when the file has them, a colour per corner.
+//! The geometry every reader produces: a triangle mesh with a material per
+//! triangle and, when the file has them, a colour, a texture coordinate and a
+//! normal per corner.
 //!
 //! ## Why meshes are welded
 //!
