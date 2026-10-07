@@ -6,8 +6,9 @@
 //! An STL has no shared points: each triangle carries its own corners. A
 //! smooth normal is the average of the faces meeting at a point, which needs
 //! those faces to name the same point, so [`crate::load`] welds every part by
-//! position. Colours ride on CORNERS, not points, so welding never has to
-//! choose between two colours meeting at one place.
+//! position. Colours, texture coordinates and the file's own normals ride on
+//! CORNERS, not points, so welding never has to choose between two of them
+//! meeting at one place (a texture seam, a hard edge).
 
 use std::collections::HashMap;
 
@@ -17,19 +18,52 @@ use glam::Vec3;
 /// material), linear RGB: a warm clay.
 pub const CLAY: [f32; 3] = [0.42, 0.40, 0.36];
 
+/// How a surface looks: glTF's metallic-roughness model, which the other
+/// formats map onto (an MTL's `Kd` is the colour, its `Ns` a roughness).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Material {
+    /// Linear RGB, multiplying the texture when there is one.
+    pub color: [f32; 3],
+    /// An index into the scene's `textures`.
+    pub texture: Option<usize>,
+    /// 0 a dielectric, 1 a metal.
+    pub metallic: f32,
+    /// 0 a mirror, 1 fully rough.
+    pub roughness: f32,
+}
+
+impl Default for Material {
+    fn default() -> Self {
+        Self { color: CLAY, texture: None, metallic: 0.0, roughness: 0.8 }
+    }
+}
+
+impl Material {
+    /// A plain surface of this colour.
+    pub fn colour(color: [f32; 3]) -> Self {
+        Self { color, ..Self::default() }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Mesh {
     pub positions: Vec<Vec3>,
     /// Counter-clockwise seen from outside.
     pub triangles: Vec<[u32; 3]>,
-    /// One per triangle: an index into `colors`.
-    pub tri_color: Vec<u32>,
-    /// The palette `tri_color` indexes, linear RGB: a material's colour each.
-    pub colors: Vec<[f32; 3]>,
+    /// One per triangle: an index into `materials`.
+    pub tri_material: Vec<u32>,
+    pub materials: Vec<Material>,
     /// Three per triangle, in `triangles` order, linear RGB, when the file
-    /// colours its points (PLY, glTF `COLOR_0`). They replace the palette
-    /// colour where present.
+    /// colours its points (PLY, glTF `COLOR_0`). They multiply the
+    /// material's colour (and replace it in [`Mesh::corner_color`]).
     pub corner_colors: Option<Vec<[f32; 3]>>,
+    /// Three per triangle, when the file has texture coordinates. Image
+    /// convention: (0, 0) the top-left texel (an OBJ `vt` is flipped in v
+    /// on the way in). They may run past 0..1: textures repeat.
+    pub corner_uvs: Option<Vec<[f32; 2]>>,
+    /// Three per triangle, unit length, when the file brings its own
+    /// normals; a caller without them derives them ([`Mesh::corner_normals`]).
+    pub file_normals: Option<Vec<Vec3>>,
 }
 
 impl Mesh {
@@ -39,29 +73,53 @@ impl Mesh {
         Some(self.positions.iter().fold((first, first), |(lo, hi), p| (lo.min(*p), hi.max(*p))))
     }
 
-    /// The colour of corner `k` (0..3) of triangle `t`.
+    /// The material of triangle `t`.
+    pub fn material(&self, t: usize) -> Material {
+        self.materials.get(self.tri_material[t] as usize).copied().unwrap_or_default()
+    }
+
+    /// The colour of corner `k` (0..3) of triangle `t`, without its texture:
+    /// the corner's own colour if the file gives one, else its material's.
     pub fn corner_color(&self, t: usize, k: usize) -> [f32; 3] {
         if let Some(c) = &self.corner_colors {
             return c[t * 3 + k];
         }
-        self.colors.get(self.tri_color[t] as usize).copied().unwrap_or(CLAY)
+        self.material(t).color
     }
 
-    /// Add `other`'s triangles to this mesh, its points and palette after
-    /// this one's. Corner colours survive: if either side has them, the
-    /// other's triangles are given their palette colours as corner colours.
+    /// Add `other`'s triangles to this mesh, its points and materials after
+    /// this one's (texture indices are the scene's, so they are kept).
+    /// Corner colours survive: if either side has them, the other's
+    /// triangles are given their material colours as corner colours. Corner
+    /// texture coordinates survive likewise, (0, 0) where a side had none;
+    /// the file's normals survive only if both sides have them.
     pub fn append(&mut self, other: &Mesh) {
         let base = self.positions.len() as u32;
-        let palette = self.colors.len() as u32;
+        let first = self.materials.len() as u32;
         if self.corner_colors.is_some() || other.corner_colors.is_some() {
             let mine = self.expanded_corner_colors();
             let theirs = other.expanded_corner_colors();
             self.corner_colors = Some(mine.into_iter().chain(theirs).collect());
         }
+        if self.corner_uvs.is_some() || other.corner_uvs.is_some() {
+            let uvs = |m: &Mesh| m.corner_uvs.clone().unwrap_or_else(|| vec![[0.0; 2]; m.triangles.len() * 3]);
+            let mut mine = uvs(self);
+            mine.extend(uvs(other));
+            self.corner_uvs = Some(mine);
+        }
+        let empty = self.triangles.is_empty();
+        self.file_normals = match (self.file_normals.take(), &other.file_normals) {
+            (Some(mut mine), Some(theirs)) => {
+                mine.extend_from_slice(theirs);
+                Some(mine)
+            }
+            (None, Some(theirs)) if empty => Some(theirs.clone()),
+            _ => None,
+        };
         self.positions.extend_from_slice(&other.positions);
         self.triangles.extend(other.triangles.iter().map(|t| t.map(|i| i + base)));
-        self.tri_color.extend(other.tri_color.iter().map(|c| c + palette));
-        self.colors.extend_from_slice(&other.colors);
+        self.tri_material.extend(other.tri_material.iter().map(|c| c + first));
+        self.materials.extend_from_slice(&other.materials);
     }
 
     fn expanded_corner_colors(&self) -> Vec<[f32; 3]> {
@@ -75,8 +133,10 @@ impl Mesh {
     /// mirror, so the winding and with it the outward side of every face are
     /// kept.
     pub fn z_up_to_y_up(&mut self) {
-        for p in &mut self.positions {
-            *p = Vec3::new(p.x, p.z, -p.y);
+        let turn = |p: &mut Vec3| *p = Vec3::new(p.x, p.z, -p.y);
+        self.positions.iter_mut().for_each(turn);
+        if let Some(n) = &mut self.file_normals {
+            n.iter_mut().for_each(turn);
         }
     }
 
@@ -120,23 +180,30 @@ impl Mesh {
             .collect();
         drop(index);
         let mut triangles = Vec::with_capacity(self.triangles.len());
-        let mut tri_color = Vec::with_capacity(self.triangles.len());
-        let mut corner_colors = self.corner_colors.as_ref().map(|c| Vec::with_capacity(c.len()));
+        let mut tri_material = Vec::with_capacity(self.triangles.len());
+        let mut kept = Vec::with_capacity(self.triangles.len());
         for (t, tri) in self.triangles.iter().enumerate() {
             let [a, b, c] = tri.map(|i| remap[i as usize]);
             if a != b && b != c && a != c {
                 triangles.push([a, b, c]);
-                tri_color.push(self.tri_color[t]);
-                if let (Some(out), Some(src)) = (&mut corner_colors, &self.corner_colors) {
-                    out.extend_from_slice(&src[t * 3..t * 3 + 3]);
-                }
+                tri_material.push(self.tri_material[t]);
+                kept.push(t);
             }
         }
+        // The corner attributes of the triangles that stayed.
+        fn keep<T: Copy>(src: &Option<Vec<T>>, kept: &[usize]) -> Option<Vec<T>> {
+            src.as_ref().map(|s| kept.iter().flat_map(|&t| [s[t * 3], s[t * 3 + 1], s[t * 3 + 2]]).collect())
+        }
+        let corner_colors = keep(&self.corner_colors, &kept);
+        let corner_uvs = keep(&self.corner_uvs, &kept);
+        let file_normals = keep(&self.file_normals, &kept);
         positions.shrink_to_fit();
         self.positions = positions;
         self.triangles = triangles;
-        self.tri_color = tri_color;
+        self.tri_material = tri_material;
         self.corner_colors = corner_colors;
+        self.corner_uvs = corner_uvs;
+        self.file_normals = file_normals;
     }
 
     /// A normal for each triangle corner (three per triangle, in order):
@@ -225,8 +292,8 @@ pub(crate) mod tests {
             }
         }
         m.triangles = (0..12).map(|t| [t * 3, t * 3 + 1, t * 3 + 2]).collect();
-        m.tri_color = vec![0; 12];
-        m.colors = vec![CLAY];
+        m.tri_material = vec![0; 12];
+        m.materials = vec![Material::default()];
         m
     }
 
@@ -262,7 +329,7 @@ pub(crate) mod tests {
         let lift = 20f32.to_radians().tan();
         m.positions = vec![Vec3::ZERO, Vec3::Z, Vec3::new(-1.0, 0.0, 0.5), Vec3::new(1.0, lift, 0.5)];
         m.triangles = vec![[0, 1, 2], [0, 3, 1]];
-        m.tri_color = vec![0, 0];
+        m.tri_material = vec![0, 0];
         let n = m.corner_normals(40.0);
         assert!(n[0].dot(n[3]) > 0.9999, "the shared point has two normals");
     }
@@ -272,7 +339,7 @@ pub(crate) mod tests {
         let mut m = Mesh::default();
         m.positions = vec![Vec3::ZERO, Vec3::X, Vec3::Y, Vec3::X, Vec3::X * (1.0 + 1e-9), Vec3::Y];
         m.triangles = vec![[0, 1, 2], [3, 4, 5]];
-        m.tri_color = vec![0, 0];
+        m.tri_material = vec![0, 0];
         m.corner_colors = Some(vec![[1.0, 0.0, 0.0]; 3].into_iter().chain(vec![[0.0, 1.0, 0.0]; 3]).collect());
         m.weld();
         assert_eq!(m.triangles, vec![[0, 1, 2]]);
@@ -310,13 +377,38 @@ pub(crate) mod tests {
     fn appending_keeps_colours_on_both_sides() {
         let mut a = soup_cube();
         let mut b = soup_cube();
-        b.colors = vec![[0.0, 0.0, 1.0]];
+        b.materials = vec![Material::colour([0.0, 0.0, 1.0])];
         b.corner_colors = Some(vec![[0.0, 1.0, 0.0]; 36]);
         a.append(&b);
         assert_eq!(a.triangles.len(), 24);
         assert_eq!(a.triangles[12], [36, 37, 38]);
-        assert_eq!(a.corner_color(0, 0), CLAY, "the first mesh's palette colour, as a corner colour");
+        assert_eq!(a.corner_color(0, 0), CLAY, "the first mesh's material colour, as a corner colour");
         assert_eq!(a.corner_color(12, 0), [0.0, 1.0, 0.0]);
+    }
+
+    #[test]
+    fn welding_keeps_each_kept_triangles_uvs_and_normals() {
+        let mut m = Mesh::default();
+        m.positions = vec![Vec3::ZERO, Vec3::X, Vec3::Y, Vec3::X, Vec3::X * (1.0 + 1e-9), Vec3::Y, Vec3::Z, Vec3::X, Vec3::Y];
+        m.triangles = vec![[0, 1, 2], [3, 4, 5], [6, 7, 8]];
+        m.tri_material = vec![0; 3];
+        m.corner_uvs = Some((0..9).map(|i| [i as f32, 0.0]).collect());
+        m.file_normals = Some((0..9).map(|i| Vec3::splat(i as f32)).collect());
+        m.weld();
+        assert_eq!(m.triangles.len(), 2, "the middle one collapsed");
+        assert_eq!(m.corner_uvs.unwrap()[3], [6.0, 0.0], "the third triangle's uvs moved up");
+        assert_eq!(m.file_normals.unwrap()[3], Vec3::splat(6.0));
+    }
+
+    #[test]
+    fn appending_keeps_uvs_and_drops_normals_one_side_lacks() {
+        let mut a = soup_cube();
+        a.corner_uvs = Some(vec![[1.0, 1.0]; 36]);
+        a.file_normals = Some(vec![Vec3::Y; 36]);
+        a.append(&soup_cube());
+        assert_eq!(a.corner_uvs.as_ref().unwrap()[36], [0.0, 0.0]);
+        assert_eq!(a.corner_uvs.unwrap().len(), 72);
+        assert!(a.file_normals.is_none());
     }
 
     #[test]

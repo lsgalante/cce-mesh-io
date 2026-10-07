@@ -4,26 +4,31 @@
 //! The scene's node tree is walked and every mesh placed where its node's
 //! transforms put it, one [`Part`] per node with a mesh, named by the node
 //! (else the mesh). Triangle lists, strips and fans are read; points and
-//! lines are skipped. Each primitive's material contributes its base colour
-//! factor, and a `COLOR_0` attribute (multiplied by that factor, as the spec
-//! does) becomes corner colours. Base-colour TEXTURES are not read yet — a
-//! textured model draws in its factor alone, often plain white — which is
-//! milestone 5's work. A node whose transform mirrors (negative determinant)
-//! has its winding reversed, so its faces still point out. glTF is Y-up by
-//! its spec, in metres.
+//! lines are skipped. Each primitive's material becomes a [`Material`]: its
+//! base colour factor, metallic and roughness factors, and its base-colour
+//! texture (decoded once per image, the first time a material uses it; the
+//! texture-coordinate set it names supplies the corners' uvs). A `COLOR_0`
+//! attribute becomes corner colours; the spec multiplies them by the factor,
+//! and the material carries the factor, so they are stored as they are.
+//! NORMAL is kept, carried through the node's inverse-transpose; a part where
+//! any primitive lacks it has no file normals. Metallic-roughness and normal
+//! TEXTURES are not read. A node whose transform mirrors (negative
+//! determinant) has its winding reversed, so its faces still point out. glTF
+//! is Y-up by its spec, in metres.
 //!
-//! Buffers are loaded here rather than by the crate's `import` feature,
-//! which would also decode every texture image.
+//! Buffers and images are loaded here rather than by the crate's `import`
+//! feature, which would decode every image whether a material uses it or
+//! not, and drags in every image format.
 
 use std::path::Path;
 
 use base64::Engine as _;
-use glam::{Mat4, Vec3};
+use glam::{Mat3, Mat4, Vec3};
 use gltf::buffer::Source;
 use gltf::mesh::Mode;
 
-use crate::mesh::Mesh;
-use crate::{Part, Scene, Unit, UpAxis};
+use crate::mesh::{Material, Mesh};
+use crate::{Part, Scene, Texture, Unit, UpAxis};
 
 /// Deeper than any real node tree; a guard against a cycle the parser let by.
 const MAX_DEPTH: usize = 128;
@@ -33,7 +38,10 @@ pub fn read(bytes: &[u8], dir: Option<&Path>) -> Result<Scene, String> {
     let buffers = load_buffers(&file, dir)?;
     let mut parts = Vec::new();
     let mut skipped_modes = 0usize;
-    let mut textured = false;
+    let mut textures: Vec<Texture> = Vec::new();
+    // glTF image index -> index into `textures`, or None for one that would
+    // not load (said once, then drawn without).
+    let mut image_slot: std::collections::HashMap<usize, Option<usize>> = std::collections::HashMap::new();
 
     let roots: Vec<gltf::Node> = match file.default_scene().or_else(|| file.scenes().next()) {
         Some(scene) => scene.nodes().collect(),
@@ -58,9 +66,14 @@ pub fn read(bytes: &[u8], dir: Option<&Path>) -> Result<Scene, String> {
         }
         let Some(gmesh) = node.mesh() else { continue };
         let mirrored = world.determinant() < 0.0;
+        let normal_matrix = Mat3::from_mat4(world).inverse().transpose();
         let mut mesh = Mesh::default();
         let mut corner_colors: Vec<[f32; 3]> = Vec::new();
         let mut any_colors = false;
+        let mut corner_uvs: Vec<[f32; 2]> = Vec::new();
+        let mut any_uvs = false;
+        let mut corner_normals: Vec<Vec3> = Vec::new();
+        let mut all_normals = true;
         for prim in gmesh.primitives() {
             let reader = prim.reader(|b| buffers.get(b.index()).map(Vec::as_slice));
             let Some(positions) = reader.read_positions() else { continue };
@@ -81,29 +94,80 @@ pub fn read(bytes: &[u8], dir: Option<&Path>) -> Result<Scene, String> {
             };
             let material = prim.material();
             let pbr = material.pbr_metallic_roughness();
-            textured |= pbr.base_color_texture().is_some();
             let [r, g, b, _] = pbr.base_color_factor();
-            let slot = mesh.colors.len() as u32;
-            mesh.colors.push([r, g, b]);
+            let base_texture = pbr.base_color_texture();
+            let texture = base_texture.as_ref().and_then(|info| {
+                let image = info.texture().source();
+                *image_slot.entry(image.index()).or_insert_with(|| match load_image(&image, &buffers, dir) {
+                    Ok(t) => {
+                        textures.push(t);
+                        Some(textures.len() - 1)
+                    }
+                    Err(e) => {
+                        log::warn!("[mesh-io] glTF image {}: {e}", image.index());
+                        None
+                    }
+                })
+            });
+            let slot = mesh.materials.len() as u32;
+            mesh.materials.push(Material {
+                color: [r, g, b],
+                texture,
+                metallic: pbr.metallic_factor(),
+                roughness: pbr.roughness_factor(),
+            });
             let point_colors: Option<Vec<[f32; 3]>> = reader.read_colors(0).map(|c| c.into_rgb_f32().collect());
+            let set = base_texture.as_ref().map_or(0, |info| info.tex_coord());
+            let point_uvs: Option<Vec<[f32; 2]>> = reader.read_tex_coords(set).map(|t| t.into_f32().collect());
+            let point_normals: Option<Vec<Vec3>> = reader
+                .read_normals()
+                .map(|n| n.map(|n| (normal_matrix * Vec3::from(n)).normalize_or_zero()).collect());
+            all_normals &= point_normals.is_some();
             for t in tris {
                 let t = if mirrored { [t[0], t[2], t[1]] } else { t };
                 for k in t {
+                    let k = k as usize;
                     corner_colors.push(match &point_colors {
                         Some(pc) => {
                             any_colors = true;
-                            let c = pc.get(k as usize).copied().unwrap_or([1.0; 3]);
-                            [c[0] * r, c[1] * g, c[2] * b]
+                            pc.get(k).copied().unwrap_or([1.0; 3])
                         }
-                        None => [r, g, b],
+                        None => [1.0; 3],
                     });
+                    corner_uvs.push(match &point_uvs {
+                        Some(pu) => {
+                            any_uvs = true;
+                            pu.get(k).copied().unwrap_or([0.0; 2])
+                        }
+                        None => [0.0; 2],
+                    });
+                    if let Some(pn) = &point_normals {
+                        corner_normals.push(pn.get(k).copied().unwrap_or(Vec3::Y));
+                    }
                 }
                 mesh.triangles.push(t.map(|i| i + base));
-                mesh.tri_color.push(slot);
+                mesh.tri_material.push(slot);
             }
         }
         if any_colors {
-            mesh.corner_colors = Some(corner_colors);
+            // Corner colours replace the material's colour where present
+            // (`Mesh::corner_color`), so a material with a factor carries
+            // it into them: the spec multiplies the two.
+            let tinted = corner_colors
+                .iter()
+                .enumerate()
+                .map(|(i, c)| {
+                    let f = mesh.materials[mesh.tri_material[i / 3] as usize].color;
+                    [c[0] * f[0], c[1] * f[1], c[2] * f[2]]
+                })
+                .collect();
+            mesh.corner_colors = Some(tinted);
+        }
+        if any_uvs {
+            mesh.corner_uvs = Some(corner_uvs);
+        }
+        if all_normals && !mesh.triangles.is_empty() {
+            mesh.file_normals = Some(corner_normals);
         }
         let name = node.name().or(gmesh.name()).map(str::to_string).unwrap_or_else(|| format!("node {}", node.index()));
         parts.push(Part { name, mesh });
@@ -112,10 +176,7 @@ pub fn read(bytes: &[u8], dir: Option<&Path>) -> Result<Scene, String> {
     if skipped_modes > 0 {
         log::info!("[mesh-io] glTF: skipped {skipped_modes} primitives of points or lines");
     }
-    if textured {
-        log::info!("[mesh-io] glTF: base-colour textures are not drawn yet; textured materials show their factor");
-    }
-    Ok(Scene { parts, up: UpAxis::Y, unit: Unit::Metre })
+    Ok(Scene { parts, up: UpAxis::Y, unit: Unit::Metre, textures })
 }
 
 /// A primitive's index list as triangles, or `None` for points and lines.
@@ -153,6 +214,30 @@ fn load_buffers(file: &gltf::Gltf, dir: Option<&Path>) -> Result<Vec<Vec<u8>>, S
             Ok(data)
         })
         .collect()
+}
+
+/// Decode an image a texture names: from a buffer view (a GLB's usual way),
+/// a data URI, or a file beside the glTF.
+fn load_image(image: &gltf::Image, buffers: &[Vec<u8>], dir: Option<&Path>) -> Result<Texture, String> {
+    match image.source() {
+        gltf::image::Source::View { view, .. } => {
+            let buffer = buffers.get(view.buffer().index()).ok_or("an image in a buffer that is not there")?;
+            let bytes = buffer
+                .get(view.offset()..view.offset() + view.length())
+                .ok_or("an image past the end of its buffer")?;
+            Texture::decode(bytes)
+        }
+        gltf::image::Source::Uri { uri, .. } if uri.starts_with("data:") => {
+            let (_, payload) = uri.split_once(";base64,").ok_or("an image data URI that is not base64")?;
+            let bytes = base64::engine::general_purpose::STANDARD.decode(payload).map_err(|e| format!("bad base64: {e}"))?;
+            Texture::decode(&bytes)
+        }
+        gltf::image::Source::Uri { uri, .. } => {
+            let path = dir.unwrap_or(Path::new(".")).join(percent_decode(uri));
+            let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+            Texture::decode(&bytes)
+        }
+    }
 }
 
 /// `my%20model.bin` → `my model.bin`: URIs in a glTF are percent-encoded.
@@ -219,6 +304,7 @@ mod tests {
         assert_eq!(part.mesh.positions[1], Vec3::new(12.0, 0.0, 0.0));
         assert_eq!(part.mesh.triangles.len(), 2, "a strip of four points is two triangles");
         assert_eq!(part.mesh.corner_color(0, 0), [0.8, 0.2, 0.1]);
+        assert_eq!(part.mesh.material(0).roughness, 1.0, "the spec's default factor");
     }
 
     #[test]
@@ -270,6 +356,74 @@ mod tests {
         let (json, _) = gltf_json(r#"[{"mesh":0}]"#, 4, r#","uri":"nowhere.bin""#);
         let e = read(json.as_bytes(), Some(Path::new("/nonexistent"))).unwrap_err();
         assert!(e.contains("nowhere.bin"), "{e}");
+    }
+
+    #[test]
+    fn a_textured_glb_brings_uvs_normals_and_its_image() {
+        // One triangle with NORMAL and TEXCOORD_0, a 2x2 PNG in a buffer
+        // view, and a node turned a quarter about Y (normals must turn too).
+        let mut png = Vec::new();
+        image::RgbaImage::from_fn(2, 2, |x, _| image::Rgba([if x == 0 { 255 } else { 0 }, 0, 0, 255]))
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        let mut bin = Vec::new();
+        for f in [0f32, 0., 0., 1., 0., 0., 0., 1., 0.] {
+            bin.extend(f.to_le_bytes()); // POSITION, 36 bytes
+        }
+        for _ in 0..3 {
+            for f in [0f32, 0., 1.] {
+                bin.extend(f.to_le_bytes()); // NORMAL +Z, 36 bytes
+            }
+        }
+        for f in [0f32, 0., 1., 0., 0., 1.] {
+            bin.extend(f.to_le_bytes()); // TEXCOORD_0, 24 bytes
+        }
+        let png_at = bin.len();
+        bin.extend(&png);
+        while bin.len() % 4 != 0 {
+            bin.push(0);
+        }
+        let json = format!(
+            r#"{{"asset":{{"version":"2.0"}},"scene":0,"scenes":[{{"nodes":[0]}}],
+            "nodes":[{{"mesh":0,"rotation":[0,0.7071068,0,0.7071068]}}],
+            "meshes":[{{"primitives":[{{"attributes":{{"POSITION":0,"NORMAL":1,"TEXCOORD_0":2}},"material":0}}]}}],
+            "materials":[{{"pbrMetallicRoughness":{{"baseColorTexture":{{"index":0}},"metallicFactor":0.25,"roughnessFactor":0.5}}}}],
+            "textures":[{{"source":0}}],"images":[{{"bufferView":3,"mimeType":"image/png"}}],
+            "accessors":[{{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,1,0]}},
+                         {{"bufferView":1,"componentType":5126,"count":3,"type":"VEC3"}},
+                         {{"bufferView":2,"componentType":5126,"count":3,"type":"VEC2"}}],
+            "bufferViews":[{{"buffer":0,"byteOffset":0,"byteLength":36}},{{"buffer":0,"byteOffset":36,"byteLength":36}},
+                           {{"buffer":0,"byteOffset":72,"byteLength":24}},{{"buffer":0,"byteOffset":{png_at},"byteLength":{}}}],
+            "buffers":[{{"byteLength":{}}}]}}"#,
+            png.len(),
+            bin.len()
+        );
+        let mut json = json.into_bytes();
+        while json.len() % 4 != 0 {
+            json.push(b' ');
+        }
+        let mut glb = Vec::new();
+        glb.extend(b"glTF");
+        glb.extend(2u32.to_le_bytes());
+        glb.extend(((12 + 8 + json.len() + 8 + bin.len()) as u32).to_le_bytes());
+        glb.extend((json.len() as u32).to_le_bytes());
+        glb.extend(b"JSON");
+        glb.extend(&json);
+        glb.extend((bin.len() as u32).to_le_bytes());
+        glb.extend(b"BIN\0");
+        glb.extend(&bin);
+
+        let s = read(&glb, None).unwrap();
+        assert_eq!(s.textures.len(), 1);
+        assert_eq!(s.textures[0].sample([0.1, 0.5])[0], 255, "the left column is red");
+        assert_eq!(s.textures[0].sample([0.9, 0.5])[0], 0);
+        let m = &s.parts[0].mesh;
+        let mat = m.material(0);
+        assert_eq!((mat.texture, mat.metallic, mat.roughness), (Some(0), 0.25, 0.5));
+        assert_eq!(mat.color, [1.0; 3], "the factor defaults to white");
+        assert_eq!(m.corner_uvs.as_ref().unwrap()[1], [1.0, 0.0]);
+        let n = m.file_normals.as_ref().unwrap()[0];
+        assert!((n - Vec3::X).length() < 1e-5, "+Z turned a quarter about Y is +X, got {n}");
     }
 
     #[test]

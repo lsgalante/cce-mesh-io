@@ -12,7 +12,7 @@
 
 use glam::Vec3;
 
-use crate::mesh::{Mesh, CLAY};
+use crate::mesh::{Material, Mesh};
 use crate::{Part, Scene, Unit, UpAxis};
 
 pub fn read(bytes: &[u8]) -> Result<Scene, String> {
@@ -21,11 +21,13 @@ pub fn read(bytes: &[u8]) -> Result<Scene, String> {
     let mesh = Mesh {
         positions: corners,
         triangles: (0..n as u32).map(|t| [t * 3, t * 3 + 1, t * 3 + 2]).collect(),
-        tri_color: vec![0; n],
-        colors: vec![CLAY],
+        tri_material: vec![0; n],
+        materials: vec![Material::default()],
         corner_colors: None,
+        corner_uvs: None,
+        file_normals: None,
     };
-    Ok(Scene { parts: vec![Part { name: String::new(), mesh }], up: UpAxis::Z, unit: Unit::Millimetre })
+    Ok(Scene { parts: vec![Part { name: String::new(), mesh }], up: UpAxis::Z, unit: Unit::Millimetre, textures: Vec::new() })
 }
 
 fn is_binary(bytes: &[u8]) -> bool {

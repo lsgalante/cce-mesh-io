@@ -20,7 +20,7 @@ mod stl;
 
 use std::path::Path;
 
-pub use mesh::{srgb_to_linear, Mesh, CLAY};
+pub use mesh::{srgb_to_linear, Material, Mesh, CLAY};
 
 /// File extensions [`load`] reads, lowercase.
 pub const EXTENSIONS: &[&str] = &["stl", "obj", "gltf", "glb", "ply"];
@@ -58,6 +58,39 @@ impl Unit {
     }
 }
 
+/// An image a material names: decoded, 8-bit RGBA, rows top to bottom,
+/// sRGB-encoded as the file had it (a renderer that samples it through an
+/// sRGB format gets linear values).
+#[derive(Clone)]
+pub struct Texture {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+}
+
+impl std::fmt::Debug for Texture {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Texture({}x{})", self.width, self.height)
+    }
+}
+
+impl Texture {
+    /// Decode a PNG or JPEG.
+    pub fn decode(bytes: &[u8]) -> Result<Texture, String> {
+        let image = image::load_from_memory(bytes).map_err(|e| format!("an image that will not decode: {e}"))?;
+        let rgba = image.to_rgba8();
+        Ok(Texture { width: rgba.width(), height: rgba.height(), rgba: rgba.into_raw() })
+    }
+
+    /// The texel nearest `uv` (image convention, repeating), sRGB-encoded.
+    pub fn sample(&self, uv: [f32; 2]) -> [u8; 4] {
+        let wrap = |v: f32, n: u32| ((v - v.floor()) * n as f32).floor().clamp(0.0, n as f32 - 1.0) as usize;
+        let (x, y) = (wrap(uv[0], self.width), wrap(uv[1], self.height));
+        let i = (y * self.width as usize + x) * 4;
+        [self.rgba[i], self.rgba[i + 1], self.rgba[i + 2], self.rgba[i + 3]]
+    }
+}
+
 /// One named piece of a scene: a glTF node's mesh, a whole STL.
 #[derive(Debug, Clone, Default)]
 pub struct Part {
@@ -66,12 +99,14 @@ pub struct Part {
 }
 
 /// What a file holds: its parts, already placed where the file's node tree
-/// puts them, its up axis and its unit.
+/// puts them, its up axis and its unit, and the images its materials name.
 #[derive(Debug, Clone)]
 pub struct Scene {
     pub parts: Vec<Part>,
     pub up: UpAxis,
     pub unit: Unit,
+    /// Indexed by [`Material::texture`].
+    pub textures: Vec<Texture>,
 }
 
 impl Scene {

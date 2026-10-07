@@ -15,3 +15,6 @@ log = "0.4"
 # textures nothing here draws yet. Buffers are loaded by hand (`gltf.rs`).
 gltf = { version = "1.4", default-features = false, features = ["utils", "names"] }
 base64 = "0.22"
+# Texture images: what glTF and MTL files name (PNG and JPEG are the two the
+# glTF spec allows).
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }

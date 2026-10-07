@@ -20,18 +20,30 @@ particular to this crate.
   export is not Z-up — a slicer will lay those models on their side).
 - `unit` is what the format conventionally means (STL mm, glTF metres, OBJ
   and PLY unspecified); a caller showing a size says which.
-- Colours are linear RGB. A palette colour per triangle (`tri_color` →
-  `colors`: MTL `Kd`, glTF base-colour factor) and, when the file colours
-  its points, `corner_colors` (three per triangle) which win. They ride on
-  corners so welding never has to pick between two colours at one point.
-  8-bit PLY colours are sRGB and decoded; float colours are taken as linear.
+- **Materials, not a palette** (since milestone 5): each triangle names a
+  `Material` (`tri_material` → `materials`): linear colour, an optional
+  texture (an index into `Scene::textures`), metallic and roughness — glTF's
+  model; an MTL's `Kd` / `map_Kd` / `Ns` (as roughness) / `Pm` / `Pr` map
+  onto it. `Texture`s are decoded RGBA8, sRGB-encoded, top row first
+  (`Texture::decode`, PNG or JPEG via the `image` crate; `sample` for the
+  nearest texel, repeating).
+- **Everything per corner rides on corners** (three per triangle, in
+  triangle order), so welding never chooses between two values at a point:
+  `corner_colors` (PLY, glTF `COLOR_0`, already multiplied by the material
+  colour; `Mesh::corner_color` prefers them), `corner_uvs` (image convention,
+  (0, 0) top-left; an OBJ `vt` is flipped in v; they may exceed 0..1 — textures
+  repeat), and `file_normals` (glTF `NORMAL` through the node's
+  inverse-transpose, OBJ `vn` only when every corner has one). `weld`,
+  `append` and `z_up_to_y_up` keep all three in step; `append` drops file
+  normals one side lacks.
 - Errors are `String`s meant for a person: they name the line, the element
   or the buffer that was wrong.
 
 ## Not yet
 
-glTF base-colour textures (milestone 5: the viewer has no textured
-pipeline), PLY point clouds without faces (an error that says so), 3MF.
+Metallic-roughness, normal and occlusion TEXTURES (the factors are read),
+KHR_texture_transform and other extensions, PLY texture coordinates, PLY
+point clouds without faces (an error that says so), 3MF.
 
 ## Tests
 
