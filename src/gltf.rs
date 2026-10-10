@@ -20,6 +20,7 @@
 //! feature, which would decode every image whether a material uses it or
 //! not, and drags in every image format.
 
+use cce_core::fmt::percent_decode;
 use std::path::Path;
 
 use base64::Engine as _;
@@ -238,25 +239,6 @@ fn load_image(image: &gltf::Image, buffers: &[Vec<u8>], dir: Option<&Path>) -> R
             Texture::decode(&bytes)
         }
     }
-}
-
-/// `my%20model.bin` → `my model.bin`: URIs in a glTF are percent-encoded.
-fn percent_decode(s: &str) -> String {
-    let b = s.as_bytes();
-    let mut out = Vec::with_capacity(b.len());
-    let mut i = 0;
-    while i < b.len() {
-        if b[i] == b'%' && i + 2 < b.len() {
-            if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
-                out.push(v);
-                i += 3;
-                continue;
-            }
-        }
-        out.push(b[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
 }
 
 #[cfg(test)]

@@ -9,6 +9,8 @@ name = "cce_mesh_io"
 path = "src/lib.rs"
 
 [dependencies]
+# Byte-safe percent_decode (fmt); GUI-free, without the config.
+cce-core = { git = "https://github.com/lsgalante/cce-core.git", rev = "0adfe0bb400d4ac7e85f4ab36145dda3f346fcd4", default-features = false }
 glam = "0.29"
 log = "0.4"
 # Without its default `import` feature: that pulls in the image decoders for
