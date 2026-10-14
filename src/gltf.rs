@@ -183,7 +183,7 @@ pub fn read(bytes: &[u8], dir: Option<&Path>) -> Result<Scene, String> {
 /// A primitive's index list as triangles, or `None` for points and lines.
 fn triangles(mode: Mode, i: &[u32]) -> Option<Vec<[u32; 3]>> {
     Some(match mode {
-        Mode::Triangles => i.chunks_exact(3).map(|t| [t[0], t[1], t[2]]).collect(),
+        Mode::Triangles => i.as_chunks::<3>().0.iter().map(|t| [t[0], t[1], t[2]]).collect(),
         // Every other triangle of a strip is reversed to keep the winding.
         Mode::TriangleStrip => (0..i.len().saturating_sub(2))
             .map(|k| if k % 2 == 0 { [i[k], i[k + 1], i[k + 2]] } else { [i[k + 1], i[k], i[k + 2]] })

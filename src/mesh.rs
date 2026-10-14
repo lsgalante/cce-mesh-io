@@ -337,11 +337,13 @@ pub(crate) mod tests {
 
     #[test]
     fn welding_drops_a_collapsed_triangle_and_its_corner_colours() {
-        let mut m = Mesh::default();
-        m.positions = vec![Vec3::ZERO, Vec3::X, Vec3::Y, Vec3::X, Vec3::X * (1.0 + 1e-9), Vec3::Y];
-        m.triangles = vec![[0, 1, 2], [3, 4, 5]];
-        m.tri_material = vec![0, 0];
-        m.corner_colors = Some(vec![[1.0, 0.0, 0.0]; 3].into_iter().chain(vec![[0.0, 1.0, 0.0]; 3]).collect());
+        let mut m = Mesh {
+            positions: vec![Vec3::ZERO, Vec3::X, Vec3::Y, Vec3::X, Vec3::X * (1.0 + 1e-9), Vec3::Y],
+            triangles: vec![[0, 1, 2], [3, 4, 5]],
+            tri_material: vec![0, 0],
+            corner_colors: Some(vec![[1.0, 0.0, 0.0]; 3].into_iter().chain(vec![[0.0, 1.0, 0.0]; 3]).collect()),
+            ..Default::default()
+        };
         m.weld();
         assert_eq!(m.triangles, vec![[0, 1, 2]]);
         assert_eq!(m.corner_colors.unwrap(), vec![[1.0, 0.0, 0.0]; 3]);
@@ -389,12 +391,14 @@ pub(crate) mod tests {
 
     #[test]
     fn welding_keeps_each_kept_triangles_uvs_and_normals() {
-        let mut m = Mesh::default();
-        m.positions = vec![Vec3::ZERO, Vec3::X, Vec3::Y, Vec3::X, Vec3::X * (1.0 + 1e-9), Vec3::Y, Vec3::Z, Vec3::X, Vec3::Y];
-        m.triangles = vec![[0, 1, 2], [3, 4, 5], [6, 7, 8]];
-        m.tri_material = vec![0; 3];
-        m.corner_uvs = Some((0..9).map(|i| [i as f32, 0.0]).collect());
-        m.file_normals = Some((0..9).map(|i| Vec3::splat(i as f32)).collect());
+        let mut m = Mesh {
+            positions: vec![Vec3::ZERO, Vec3::X, Vec3::Y, Vec3::X, Vec3::X * (1.0 + 1e-9), Vec3::Y, Vec3::Z, Vec3::X, Vec3::Y],
+            triangles: vec![[0, 1, 2], [3, 4, 5], [6, 7, 8]],
+            tri_material: vec![0; 3],
+            corner_uvs: Some((0..9).map(|i| [i as f32, 0.0]).collect()),
+            file_normals: Some((0..9).map(|i| Vec3::splat(i as f32)).collect()),
+            ..Default::default()
+        };
         m.weld();
         assert_eq!(m.triangles.len(), 2, "the middle one collapsed");
         assert_eq!(m.corner_uvs.unwrap()[3], [6.0, 0.0], "the third triangle's uvs moved up");
